@@ -38,3 +38,6 @@ env/
 
 # OS
 .DS_Store
+
+# Generated artifacts
+outputs/

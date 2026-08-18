@@ -18,7 +18,6 @@ import torch
 
 from mMIMO_sleep.array_config import ArrayConfig
 
-
 _COMPLEX_DTYPES: Final = (torch.complex64, torch.complex128)
 
 

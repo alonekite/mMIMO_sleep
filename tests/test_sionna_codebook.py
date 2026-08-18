@@ -20,7 +20,6 @@ from mMIMO_sleep.simulation.sionna_array import (
     weights_to_sionna_precoding,
 )
 
-
 _HAS_SIONNA = importlib.util.find_spec("sionna.rt") is not None
 
 pytestmark = pytest.mark.skipif(not _HAS_SIONNA, reason="Sionna RT not installed")
@@ -118,7 +117,6 @@ def test_one_hot_port_mapping_via_channel_phase(
     phase implied by ``ArrayConfig`` positions, and the orthogonal polarization
     must be essentially silent.
     """
-    import mitsuba as mi
     import sionna.rt as rt
 
     config = ArrayConfig(

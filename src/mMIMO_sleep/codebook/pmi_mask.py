@@ -53,7 +53,8 @@ def _validate_common_args(
         raise ValueError(f"phase_sign must be +1 or -1, got {phase_sign}.")
     if not isinstance(spacing_wavelengths, (int, float)):
         raise TypeError(
-            f"spacing_wavelengths must be a real number, got {type(spacing_wavelengths)}."
+            "spacing_wavelengths must be a real number, "
+            f"got {type(spacing_wavelengths)}."
         )
     if not math.isfinite(spacing_wavelengths) or spacing_wavelengths <= 0:
         raise ValueError(
@@ -404,7 +405,10 @@ def pmi_indices_from_mask(mask: torch.Tensor) -> list[tuple[int, int]]:
     if mask.dtype != torch.bool:
         raise TypeError(f"mask must have dtype torch.bool, got {mask.dtype}.")
     rows, cols = torch.where(mask)
-    return [(int(c), int(r)) for r, c in zip(rows.tolist(), cols.tolist())]
+    return [
+        (int(c), int(r))
+        for r, c in zip(rows.tolist(), cols.tolist(), strict=True)
+    ]
 
 
 def beam_indices_from_mask(

@@ -8,13 +8,10 @@ from unittest.mock import patch
 import pytest
 import torch
 
+import mMIMO_sleep.codebook.pmi_mask as pmi_mask
 from mMIMO_sleep.array_config import ArrayConfig
 from mMIMO_sleep.codebook.dft import generate_dft_codebook
-from mMIMO_sleep.codebook.muting import apply_muting_mask, create_right_half_mask
 from mMIMO_sleep.codebook.pmi import PMI, pmi_to_beam_index
-
-import mMIMO_sleep.codebook.pmi_mask as pmi_mask
-
 
 # ---------------------------------------------------------------------------
 # Deterministic helper tests
@@ -182,8 +179,6 @@ def _direct_array_factor(
 ) -> torch.Tensor:
     """Brute-force reference with the same phase convention as the helper."""
     num_v, num_h = weights_2d.shape
-    rows = torch.arange(num_v, dtype=torch.float64)
-    cols = torch.arange(num_h, dtype=torch.float64)
     result = torch.zeros(len(u_h), dtype=torch.complex128)
     for idx in range(len(u_h)):
         for r in range(num_v):

@@ -1,0 +1,138 @@
+name: Build RunPod image
+
+# Manual trigger ONLY. This builds a large image (PyTorch + CUDA libs +
+# Sionna RT/Mitsuba/Dr.Jit); it must never run automatically on push, pull
+# request, or a schedule.
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: >-
+          Docker tag to build and push (e.g. v1, v2). Must NOT be "latest".
+        required: true
+        default: "v1"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-push:
+    name: Build, CPU smoke test, push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify required files exist
+        run: |
+          set -euo pipefail
+          missing=0
+          for f in \
+            Dockerfile.runpod \
+            .dockerignore \
+            docker/runpod-start.sh \
+            docker/smoke_test.py \
+            docker/verify_environment.py \
+            docker/requirements-runpod.txt \
+            docker/constraints.txt
+          do
+            if [ ! -f "$f" ]; then
+              echo "::error::required file missing: $f"
+              missing=1
+            else
+              echo "found: $f"
+            fi
+          done
+          if [ "$missing" != "0" ]; then
+            exit 1
+          fi
+
+      - name: Validate image_tag and compute image name
+        env:
+          IMAGE_TAG_INPUT: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          TAG="${IMAGE_TAG_INPUT}"
+          if [ -z "${TAG}" ]; then
+            echo "::error::image_tag is empty"
+            exit 1
+          fi
+          if [ "${TAG}" = "latest" ]; then
+            echo "::error::image_tag must not be 'latest'"
+            exit 1
+          fi
+          # Valid Docker tag: 1-128 chars, [A-Za-z0-9_.-], cannot start with '.' or '-'.
+          if ! [[ "${TAG}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::image_tag '${TAG}' is not a valid Docker tag"
+            exit 1
+          fi
+          if [ -z "${{ vars.DOCKERHUB_USERNAME }}" ]; then
+            echo "::error::repository variable DOCKERHUB_USERNAME is not set"
+            exit 1
+          fi
+          IMAGE="${{ vars.DOCKERHUB_USERNAME }}/mmimo-sleep-runpod:${TAG}"
+          echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "Resolved image: ${IMAGE}"
+
+      - name: Diagnostics (disk space + docker version)
+        run: |
+          echo "---- df -h ----"
+          df -h
+          echo "---- docker version ----"
+          docker version
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push image
+        # The CPU/import smoke test (docker/smoke_test.py --mode cpu) and the
+        # dependency assertions (docker/verify_environment.py) now run as
+        # `RUN` layers *inside* Dockerfile.runpod itself (see that file).
+        # buildx therefore refuses to produce a final image, and this step
+        # fails, before `push: true` can ever push a broken image — there is
+        # no separate "build then smoke-test then push" sequence to
+        # maintain here, and no need for `load: true` to pull the multi-GB
+        # image into the runner's local Docker store first (which risks
+        # exhausting the runner's disk alongside the layer cache).
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile.runpod
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify pushed image is linux/amd64
+        run: |
+          set -euo pipefail
+          OUTPUT="$(docker buildx imagetools inspect "${{ env.IMAGE }}")"
+          echo "${OUTPUT}"
+          if ! echo "${OUTPUT}" | grep -q "linux/amd64"; then
+            echo "::error::pushed image manifest does not report a linux/amd64 platform"
+            exit 1
+          fi
+
+      - name: Write job summary
+        run: |
+          {
+            echo "### RunPod image build: success"
+            echo ""
+            echo "- **Image**: \`${{ env.IMAGE }}\`"
+            echo "- **Digest**: \`${{ steps.build.outputs.digest }}\`"
+            echo "- **Platform**: linux/amd64 (verified via \`docker buildx imagetools inspect\`)"
+            echo "- **CPU/import smoke test**: passed as a Dockerfile \`RUN\` layer (\`--mode cpu\`)"
+            echo "- **Dependency assertions**: passed as a Dockerfile \`RUN\` layer (\`docker/verify_environment.py\`: pip check, pip freeze snapshot, exact torch/CUDA version, no CUDA 13 packages)"
+            echo ""
+            echo "> GPU acceptance (\`--mode gpu\`) has NOT been run by this workflow." \
+                 "It must be run manually on an actual RunPod GPU pod before relying on" \
+                 "this tag for production workloads."
+          } >> "$GITHUB_STEP_SUMMARY"

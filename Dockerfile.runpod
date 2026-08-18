@@ -1,0 +1,253 @@
+# syntax=docker/dockerfile:1
+#
+# mMIMO_sleep RunPod image
+# =========================
+#
+# Design summary (see docker/README.md for the full write-up):
+#
+# - Base image: nvidia/cuda:12.6.3-base-ubuntu22.04 (fixed tag, not `latest`).
+#   This is an official NVIDIA image built on Ubuntu 22.04.5. The `-base`
+#   variant ships real CUDA 12.6 *runtime* packaging (the CUDA base package,
+#   NVIDIA Container Toolkit hook metadata/env vars, and a small set of core
+#   shared libraries such as libcudart) — it is more than just metadata, but
+#   it deliberately excludes the full CUDA development toolkit (nvcc,
+#   headers, static libs — that would be the `-devel` variant) and, crucially,
+#   it does NOT and CANNOT bundle the GPU driver itself (the driver is
+#   tied to the host kernel and is never shipped inside a container image).
+#   The actual driver and libcuda.so are injected by the RunPod host at
+#   container start via the NVIDIA Container Toolkit, so host driver
+#   compatibility with the pinned CUDA 12.6 wheel remains essential
+#   regardless of what this base image provides. Because our PyTorch wheel
+#   is the `+cu126` build, its bundled `nvidia-*-cu12` pip packages provide
+#   the CUDA 12.6 runtime libraries (cuBLAS, cuDNN, NCCL, etc.) directly
+#   from site-packages — the base image's CUDA version tag only needs to be
+#   compatible with (>=) the wheel's CUDA version, which it is by
+#   construction (both are 12.6).
+#
+# - Python 3.11 is installed from the deadsnakes PPA as the unversioned
+#   `python3.11` / `python3.11-venv` packages (major.minor only, no exact
+#   patch pin). Rationale, since this is a common point of confusion:
+#     * The CPython/cp311 *ABI* (the `cp311` wheel tag, the stable ABI,
+#       .so extension suffixes, etc.) is determined by the major.minor
+#       version (3.11) only. Any 3.11.x patch release is ABI-compatible
+#       with any other 3.11.x patch release. Pinning an exact patch such
+#       as 3.11.15 was therefore never required for wheel compatibility.
+#     * An exact `python3.11=3.11.15-1+jammy1` apt pin was tried instead
+#       for maximum reproducibility, but deadsnakes (like most PPAs) does
+#       not guarantee indefinite retention of superseded patch builds —
+#       once a newer 3.11.x is uploaded, older `.deb` files can be pruned
+#       from the archive, which would make a future `docker build` fail
+#       with "Version '3.11.15-1+jammy1' ... has no installation
+#       candidate" even though nothing in this repo changed.
+#     * Trade-off accepted here: reproducibility of the *behavior* (ABI,
+#       stdlib) is guaranteed long-term by pinning major.minor only;
+#       byte-for-byte reproducibility of the *exact interpreter build* is
+#       not guaranteed across rebuilds performed months apart. If you need
+#       the latter, do not rebuild from source on demand — instead keep
+#       the already-built, versioned image (e.g. `:v1`) as the artifact of
+#       record, and only rebuild deliberately when you want to move
+#       forward. The resolved version is also printed to build logs and
+#       recorded at /opt/build/python-version.txt inside the image for
+#       auditability.
+#   The distro-default `/usr/bin/python3` (3.10 on Ubuntu 22.04) is left
+#   untouched.
+#
+# - The Python environment lives at /opt/venv, inside the image itself
+#   (NOT under /workspace). This makes the interpreter and all binary
+#   extensions (torch, mitsuba, drjit, ...) part of the immutable, versioned
+#   image, so a RunPod host/pod migration can never again leave a dangling
+#   `.venv/bin/python -> python3.11 -> /usr/bin/python3.11` symlink pointing
+#   at a system Python that doesn't exist in the new container.
+#
+# - Project *code* is intentionally NOT copied into the image. It continues
+#   to live on the RunPod Network Volume, mounted at /workspace (the
+#   project itself is the /workspace/mMIMO_sleep subdirectory of that
+#   mount), and is installed editable
+#   (`pip install -e /workspace/mMIMO_sleep --no-deps`) by
+#   docker/runpod-start.sh every time the container starts. `--no-deps`
+#   is essential: it prevents pip from re-resolving `torch>=2.2,<3` from the
+#   pyproject.toml dependency list against the default PyPI index, which
+#   would silently swap the pinned cu126 wheel for a cu130 build (see
+#   handoff20260817.md Section 6 for the historical incident).
+
+FROM nvidia/cuda:12.6.3-base-ubuntu22.04
+
+LABEL maintainer="mMIMO_sleep" \
+      description="RunPod image for mMIMO_sleep: Ubuntu 22.04 + Python 3.11 + PyTorch 2.13.0+cu126 + Sionna RT 1.2.2 + Mitsuba 3.8.0 + Dr.Jit 1.3.1"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=en_US.UTF-8 \
+    LANGUAGE=en_US:en \
+    LC_ALL=en_US.UTF-8 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    VENV_PATH=/opt/venv \
+    PROJECT_DIR=/workspace/mMIMO_sleep \
+    PIP_CONSTRAINT=/opt/build/constraints.txt \
+    PATH="/opt/venv/bin:${PATH}"
+
+# ---------------------------------------------------------------------------
+# System packages
+# ---------------------------------------------------------------------------
+# - software-properties-common: needed for add-apt-repository (deadsnakes PPA)
+# - python3.11 / python3.11-venv: major.minor pin only (see rationale in the
+#   header comment above re: ABI vs. exact patch reproducibility).
+# - openssh-server: RunPod's standard SSH connection method
+# - libgl1 / libglib2.0-0 / libgomp1: minimal runtime shared libraries used
+#   by Mitsuba's CUDA/LLVM variants and by NumPy/PyTorch's OpenMP runtime
+# - llvm: Ubuntu 22.04's standard LLVM runtime metapackage (currently
+#   resolves to llvm-14). The GitHub Actions build-time smoke test below
+#   runs with no GPU present, so Dr.Jit/Mitsuba fall back to their LLVM JIT
+#   backend; that backend dlopen()s a shared libLLVM at runtime and fails
+#   without it. This also benefits real RunPod pods with non-CUDA-capable
+#   or misconfigured GPUs, since the LLVM backend is the CPU fallback there
+#   too.
+# - locales: avoids perl/locale warnings from apt post-install hooks
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        gnupg \
+        locales \
+        openssh-server \
+        software-properties-common \
+    && locale-gen en_US.UTF-8 \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && \
+    apt-get install -y --no-install-recommends \
+        python3.11 \
+        python3.11-venv \
+        libgl1 \
+        libglib2.0-0 \
+        libgomp1 \
+        llvm \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /opt/build \
+    && python3.11 --version | tee /opt/build/python-version.txt
+
+# ---------------------------------------------------------------------------
+# Build-time diagnostic: confirm a usable LLVM shared library is actually
+# registered with the dynamic linker (not just that the `llvm` package's
+# files exist on disk). Fails the build immediately if not, rather than
+# deferring the failure to a later, harder-to-diagnose Dr.Jit/Mitsuba
+# import error.
+# ---------------------------------------------------------------------------
+RUN set -eu; \
+    found="$(ldconfig -p | grep -i 'libLLVM' || true)"; \
+    if [ -z "${found}" ]; then \
+        echo "ERROR: no libLLVM*.so registered with ldconfig after installing the 'llvm' package." >&2; \
+        echo "ldconfig -p | grep -i llvm:" >&2; \
+        ldconfig -p | grep -i llvm >&2 || true; \
+        exit 1; \
+    fi; \
+    echo "Found usable LLVM shared library:"; \
+    echo "${found}"; \
+    echo "${found}" | tee /opt/build/llvm-check.txt
+
+# ---------------------------------------------------------------------------
+# CUDA forward-compatibility libraries are intentionally NOT touched at
+# build time. At build time, no GPU/driver is present at all (this is a
+# plain OS image build), so there is no way to verify whether a compat
+# `libcuda.so` would actually shadow a real driver — unconditionally
+# deleting the base image's compat directory here would be exactly the
+# kind of blind system-file mutation we want to avoid. The base image's
+# NVIDIA-provided compat package is also indefinitely reusable (it's not
+# something RunPod injects at build time), so leaving it in place changes
+# nothing until a container actually runs on a GPU host.
+#
+# The real fix must happen at container *start*, once a driver may or may
+# not have been injected by the NVIDIA Container Toolkit / RunPod host —
+# see the diagnose_and_fix_cuda_compat() function in docker/runpod-start.sh
+# for the evidence-gated, idempotent, audit-logged version of this fix, and
+# docker/README.md "CUDA Error 804 diagnosis logic" for the full explanation.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Copy the pip constraints file BEFORE any pip invocation, since
+# PIP_CONSTRAINT (set above) is honored by every pip command from here on,
+# including the `pip install --upgrade pip` bootstrap step below.
+# (/opt/build already exists from the apt-get step above.)
+# ---------------------------------------------------------------------------
+COPY docker/constraints.txt /opt/build/constraints.txt
+
+# ---------------------------------------------------------------------------
+# Python virtual environment at /opt/venv (inside the image, not /workspace)
+# ---------------------------------------------------------------------------
+# `wheel` is pinned here (not just `setuptools`) so that
+# `pip install -e ... --no-build-isolation` in docker/runpod-start.sh never
+# needs to reach out to PyPI for a build-time dependency at container start;
+# every tool listed in pyproject.toml's [build-system] plus `wheel` is
+# already present in this venv by the time the image is built.
+RUN python3.11 -m venv ${VENV_PATH} && \
+    ${VENV_PATH}/bin/pip install --upgrade pip==26.2.1 setuptools==79.0.1 wheel==0.45.1
+
+# ---------------------------------------------------------------------------
+# 1) Install PyTorch from the official CUDA 12.6 wheel index FIRST.
+#    This must happen before any other dependency installation so that
+#    nothing else can resolve `torch` against the default PyPI index
+#    (which would select the cu130 build; see docker/constraints.txt).
+# ---------------------------------------------------------------------------
+RUN ${VENV_PATH}/bin/pip install \
+        torch==2.13.0+cu126 \
+        --index-url https://download.pytorch.org/whl/cu126
+
+# ---------------------------------------------------------------------------
+# 2) Install the rest of the pinned dependencies (Sionna RT, Mitsuba,
+#    Dr.Jit, NumPy, Matplotlib, Jupyter/ipykernel, pytest, ruff) from the
+#    default PyPI index. PIP_CONSTRAINT (set above) guarantees pip will
+#    refuse to touch torch even if something in this set nominally depends
+#    on it (none of these packages do, but the constraint is defense in
+#    depth).
+# ---------------------------------------------------------------------------
+COPY docker/requirements-runpod.txt /opt/build/requirements-runpod.txt
+RUN ${VENV_PATH}/bin/pip install -r /opt/build/requirements-runpod.txt
+
+# ---------------------------------------------------------------------------
+# 3) Verify the resolved dependency set before doing anything else with it:
+#    `pip check`, a full `pip freeze` snapshot saved to
+#    /opt/build/pip-freeze.txt, exact torch/CUDA version assertions, and a
+#    guard against any accidentally-resolved CUDA 13 NVIDIA package. See
+#    docker/verify_environment.py for the exact checks; this deliberately
+#    fails the build (non-zero exit) rather than silently shipping a broken
+#    or mismatched environment.
+# ---------------------------------------------------------------------------
+COPY docker/verify_environment.py /opt/build/verify_environment.py
+RUN ${VENV_PATH}/bin/python /opt/build/verify_environment.py
+
+# ---------------------------------------------------------------------------
+# Register the Jupyter kernelspec in a stable, system-wide location so it
+# does not depend on $HOME or a per-user Jupyter data directory.
+# argv[0] is /opt/venv/bin/python — never the network-volume .venv.
+# ---------------------------------------------------------------------------
+RUN ${VENV_PATH}/bin/python -m ipykernel install \
+        --prefix=/usr/local \
+        --name mmimo-sleep \
+        --display-name "Python (mMIMO_sleep)"
+
+# ---------------------------------------------------------------------------
+# Smoke-test script + startup script (see docker/README.md)
+# ---------------------------------------------------------------------------
+COPY docker/smoke_test.py /opt/smoke_test.py
+COPY docker/runpod-start.sh /opt/runpod-start.sh
+RUN chmod +x /opt/runpod-start.sh
+
+# ---------------------------------------------------------------------------
+# Build-time CPU/import smoke test. Runs on every build (including
+# GitHub-hosted, GPU-less CI runners) and fails the build immediately if
+# any packaged-environment check regresses. /workspace/mMIMO_sleep does not
+# exist at build time (the network volume is only mounted on a real RunPod
+# pod at container start), so smoke_test.py's project-import check reports
+# a "skipped" PASS rather than failing — every other check (torch, CUDA
+# metadata, sionna-rt, drjit, mitsuba, pip check, kernelspec) still runs and
+# must pass.
+# ---------------------------------------------------------------------------
+RUN ${VENV_PATH}/bin/python /opt/smoke_test.py --mode cpu
+
+WORKDIR /workspace
+
+EXPOSE 22 8888
+
+CMD ["/opt/runpod-start.sh"]

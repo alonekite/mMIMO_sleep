@@ -1,0 +1,15 @@
+# pip constraints file — see https://pip.pypa.io/en/stable/user_guide/#constraints-files
+#
+# Purpose: prevent ANY subsequent `pip install` inside this image (including
+# `pip install -e ".[dev,rt]"` run without --no-deps, e.g. by a future
+# maintainer or a stray command) from silently replacing the CUDA 12.6
+# PyTorch wheel with the default-index CUDA 13.0 wheel. The RTX 4090 (and
+# other consumer GPUs) does not support NVIDIA driver forward-compatibility,
+# so a cu130 wheel would fail with "Error 804: forward compatibility was
+# attempted on non supported HW" even though the package itself installs
+# fine (see /workspace/mMIMO_sleep/handoff20260817.md Section 6).
+#
+# This file is referenced via the PIP_CONSTRAINT env var set in
+# Dockerfile.runpod. pip will refuse to install a torch version that does
+# not exactly match this constraint instead of silently swapping wheels.
+torch==2.13.0+cu126

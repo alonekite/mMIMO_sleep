@@ -1,0 +1,32 @@
+.git/
+.gitignore
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project data / notebooks / docs are used from the network volume, not baked into the image
+notebook/
+outputs/
+*.md
+pmi_mask_review_issue.md
+
+# Never bake secrets into the image
+*.pem
+*.key
+id_rsa*
+.ssh/
+.env
+
+# Docker build context itself
+docker/README.md

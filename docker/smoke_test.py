@@ -32,19 +32,32 @@ import importlib.metadata
 import json
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 FAILURES: list[str] = []
 
 
 def check(name: str, fn):
-    """Run fn(); print PASS/FAIL; record failures. Returns fn()'s result or None."""
+    """Run fn(); print PASS/FAIL; record failures. Returns fn()'s result or None.
+
+    On failure, prints full diagnostic detail (exception type, repr(),
+    __cause__, __context__, and the complete traceback) rather than just
+    str(exc) — a bare str() can hide the real underlying ImportError when
+    Dr.Jit/Mitsuba wrap it in a higher-level error message.
+    """
     try:
         result = fn()
         print(f"[PASS] {name}: {result}")
         return result
     except Exception as exc:  # noqa: BLE001 - smoke test wants to keep going
-        print(f"[FAIL] {name}: {exc}")
+        print(f"[FAIL] {name}: exception_type={type(exc)!r}")
+        print(f"[FAIL] {name}: repr(exception)={exc!r}")
+        print(f"[FAIL] {name}: exception.__cause__={exc.__cause__!r}")
+        print(f"[FAIL] {name}: exception.__context__={exc.__context__!r}")
+        print(f"[FAIL] {name}: full traceback follows --------------------")
+        traceback.print_exc()
+        print(f"[FAIL] {name}: end of traceback ----------------------------")
         FAILURES.append(name)
         return None
 

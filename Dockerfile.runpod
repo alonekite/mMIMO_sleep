@@ -104,9 +104,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   without it. This also benefits real RunPod pods with non-CUDA-capable
 #   or misconfigured GPUs, since the LLVM backend is the CPU fallback there
 #   too.
+# - binutils: provides `readelf`, used ONLY by the failure-only Dr.Jit
+#   dynamic-linking diagnostic below (docker/drjit_diagnose.py) to inspect
+#   RPATH/RUNPATH/NEEDED entries when an import fails. `ldd` itself already
+#   ships in the base image via libc-bin. Diagnostic-only; not otherwise
+#   required at runtime.
 # - locales: avoids perl/locale warnings from apt post-install hooks
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        binutils \
         ca-certificates \
         curl \
         git \
@@ -233,6 +239,21 @@ RUN ${VENV_PATH}/bin/python -m ipykernel install \
 COPY docker/smoke_test.py /opt/smoke_test.py
 COPY docker/runpod-start.sh /opt/runpod-start.sh
 RUN chmod +x /opt/runpod-start.sh
+
+# ---------------------------------------------------------------------------
+# Failure-only Dr.Jit/Mitsuba dynamic-linking diagnostic. Runs immediately
+# BEFORE the CPU smoke test below. On success (both imports work) it only
+# prints two "[INFO] import ...: OK" lines and exits 0 — no extra noise on
+# a healthy build. On failure, it dumps python identity, `pip show`, every
+# .so under the drjit package dir, `ldd`/`readelf -d` on the extension
+# module(s), the real location of libdrjit-extra.so / libdrjit-core.so, and
+# the relevant `ldconfig -p` entries, THEN re-raises so this step (and the
+# build) fails here — one step earlier than smoke_test.py would otherwise
+# fail on the same import, with full diagnostics already in the log. See
+# docker/drjit_diagnose.py.
+# ---------------------------------------------------------------------------
+COPY docker/drjit_diagnose.py /opt/drjit_diagnose.py
+RUN ${VENV_PATH}/bin/python /opt/drjit_diagnose.py
 
 # ---------------------------------------------------------------------------
 # Build-time CPU/import smoke test. Runs on every build (including

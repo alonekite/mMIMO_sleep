@@ -125,6 +125,62 @@ but this GPU does not support forward compatibility" — which is exactly
 the consumer-GPU (e.g. RTX 4090) + shadowed-compat-library combination
 this function detects and, only when confirmed, corrects.
 
+### Dr.Jit / `libatomic1`: a misleading error message, and the real root cause
+
+The **first real GitHub Actions build** of this image failed with:
+
+```
+Could not import the Dr.Jit binary extension. It is likely that the Python
+version for which Dr.Jit was compiled (3.11.14) is incompatible with the
+current interpreter (3.11.15).
+```
+
+**This message is misleading.** It suggests a Python patch-version ABI
+mismatch, but that is not possible here: `drjit==1.3.1` ships a `cp311`
+wheel, and the `cp311` ABI tag, stable ABI, and extension module (`.so`)
+naming are all determined by Python's **major.minor** version only — any
+`3.11.x` patch release is ABI-compatible with any other `3.11.x` patch
+release (see "Python 3.11 pinning" above). Dr.Jit's own import wrapper
+prints this specific message for *any* failure to load its binary
+extension, regardless of the actual cause, which made it look like a
+patch-version problem when it was not.
+
+**The real root cause**, found by inspecting `exception.__cause__` (not
+just `str(exception)`) and running `ldd` on the extension module itself:
+
+```
+exception.__cause__:
+ImportError: libatomic.so.1: cannot open shared object file: No such file or directory
+
+ldd _drjit_ext*.so:
+libatomic.so.1 => not found
+```
+
+Dr.Jit's compiled binary extension (`_drjit_ext*.so`) links against
+`libatomic.so.1` (part of GCC's `libatomic` runtime, used for atomic
+memory operations). The base image
+(`nvidia/cuda:12.6.3-base-ubuntu22.04`) does not install this library by
+default. The fix (in `Dockerfile.runpod`) is a single added apt package:
+
+```
+apt-get install -y --no-install-recommends libatomic1 ...
+```
+
+(Ubuntu 22.04's package name is `libatomic1`; the shared library it ships
+is `libatomic.so.1`.) A build-time assertion immediately follows the
+`apt-get install` step and greps `ldconfig -p` for `libatomic.so.1`,
+failing the build immediately if it isn't registered — the same
+fail-fast pattern already used for the `llvm`/`libLLVM` check above.
+
+**Lesson**: when a compiled extension's own error message names a
+specific hypothesis (here, a Python patch-version mismatch), verify it
+against `exception.__cause__`/`exception.__context__` and `ldd` on the
+actual `.so` before changing any pinned version — the wrapping library's
+message can be generic and wrong, while the underlying `ImportError` and
+`ldd`'s "not found" line are ground truth. No Python, Dr.Jit, Mitsuba,
+Sionna RT, or PyTorch version was changed to fix this; it was purely a
+missing system shared library.
+
 ## 2. Files in this directory / repo root
 
 | File | Purpose |

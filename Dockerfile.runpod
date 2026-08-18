@@ -104,6 +104,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   without it. This also benefits real RunPod pods with non-CUDA-capable
 #   or misconfigured GPUs, since the LLVM backend is the CPU fallback there
 #   too.
+# - libatomic1: required by the Dr.Jit binary extension (`_drjit_ext*.so`).
+#   Confirmed root cause of a real build failure (see docker/README.md
+#   "Dr.Jit / libatomic1" section): Dr.Jit's own error message
+#   ("Could not import the Dr.Jit binary extension... incompatible with
+#   the current interpreter") falsely suggested a Python 3.11.14 vs.
+#   3.11.15 ABI mismatch, but `exception.__cause__` was actually
+#   `ImportError: libatomic.so.1: cannot open shared object file`, and
+#   `ldd` on the extension module confirmed `libatomic.so.1 => not found`.
+#   Ubuntu 22.04 does not install `libatomic1` by default in this base
+#   image.
 # - locales: avoids perl/locale warnings from apt post-install hooks
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -120,6 +130,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         python3.11 \
         python3.11-venv \
+        libatomic1 \
         libgl1 \
         libglib2.0-0 \
         libgomp1 \
@@ -127,6 +138,25 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /opt/build \
     && python3.11 --version | tee /opt/build/python-version.txt
+
+# ---------------------------------------------------------------------------
+# Build-time assertion: confirm libatomic.so.1 is actually registered with
+# the dynamic linker after installing libatomic1 above (not just that the
+# package's files exist on disk). Fails the build immediately if not,
+# rather than deferring the failure to the much harder-to-diagnose Dr.Jit
+# ImportError this was added to fix (see docker/README.md).
+# ---------------------------------------------------------------------------
+RUN set -eu; \
+    found="$(ldconfig -p | grep -F 'libatomic.so.1' || true)"; \
+    if [ -z "${found}" ]; then \
+        echo "ERROR: libatomic.so.1 not registered with ldconfig after installing libatomic1." >&2; \
+        echo "ldconfig -p | grep -i atomic:" >&2; \
+        ldconfig -p | grep -i atomic >&2 || true; \
+        exit 1; \
+    fi; \
+    echo "Found libatomic.so.1:"; \
+    echo "${found}"; \
+    echo "${found}" | tee /opt/build/libatomic-check.txt
 
 # ---------------------------------------------------------------------------
 # Build-time diagnostic: confirm a usable LLVM shared library is actually

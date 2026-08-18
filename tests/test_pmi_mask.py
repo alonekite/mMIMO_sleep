@@ -36,8 +36,17 @@ def test_compute_loss_at_normal_peak_db_differs_from_separate_peak() -> None:
     normal = torch.tensor([[1.0, 4.0]])  # argmax at index 1
     sleep = torch.tensor([[8.0, 2.0]])  # argmax at index 0
     correct = pmi_mask._compute_loss_at_normal_peak_db(normal, sleep)
-    # correct: 4 / 2 -> ~3.01 dB
-    torch.testing.assert_close(correct, torch.tensor([3.0103]), atol=1e-3)
+    # correct: 4 / 2 -> 10*log10(2) dB
+    torch.testing.assert_close(
+        correct,
+        torch.tensor(
+            [10.0 * math.log10(2.0)],
+            dtype=correct.dtype,
+            device=correct.device,
+        ),
+        atol=1e-3,
+        rtol=0.0,
+    )
     # buggy separate-peak ratio: 4 / 8 -> ~-3.01 dB
     wrong = 10.0 * torch.log10(
         normal.max(dim=-1).values / sleep.max(dim=-1).values
@@ -179,13 +188,14 @@ def _direct_array_factor(
     for idx in range(len(u_h)):
         for r in range(num_v):
             for c in range(num_h):
-                result[idx] += weights_2d[r, c].item() * torch.exp(
-                    -1j
-                    * 2
+                angle = (
+                    2.0
                     * math.pi
                     * spacing
                     * (u_h[idx].item() * c + u_v[idx].item() * r)
                 )
+                phase = complex(math.cos(angle), -math.sin(angle))
+                result[idx] += weights_2d[r, c].item() * phase
     return result
 
 

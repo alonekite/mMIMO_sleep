@@ -133,8 +133,16 @@ def _planar_array():
 
 
 def _project_import():
-    import mMIMO_sleep  # noqa: F401
-
+    try:
+        import mMIMO_sleep  # noqa: F401
+    except ModuleNotFoundError as exc:
+        if exc.name == "mMIMO_sleep":
+            return (
+                "skipped: mMIMO_sleep is not installed (expected at image-build "
+                "time, before the network volume is mounted and "
+                "docker/runpod-start.sh runs the editable install)"
+            )
+        raise
     return "import ok (namespace package)"
 
 

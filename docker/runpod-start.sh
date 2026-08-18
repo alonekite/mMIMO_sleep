@@ -173,7 +173,7 @@ fi
 # ---------------------------------------------------------------------------
 # 5. Start SSHD (RunPod's standard connection method).
 # ---------------------------------------------------------------------------
-mkdir -p /var/run/sshd
+mkdir -p /run/sshd
 if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
     ssh-keygen -A
 fi
@@ -198,13 +198,23 @@ service ssh start || log "WARNING: 'service ssh start' reported an error (may al
 # 6. Optionally start JupyterLab if requested.
 # ---------------------------------------------------------------------------
 if [ "${START_JUPYTER:-1}" = "1" ]; then
-    log "Starting JupyterLab on port 8888 (token/password disabled: RUNPOD_JUPYTER_TOKEN=${RUNPOD_JUPYTER_TOKEN:-<none>})"
+    if [ -n "${RUNPOD_JUPYTER_TOKEN:-}" ]; then
+        token_status="a token is set (value never logged)"
+    else
+        token_status="no token is set - Jupyter will be UNAUTHENTICATED"
+    fi
+    log "Starting JupyterLab on port 8888 (${token_status})."
+    # Jupyter's own startup banner can include the access URL with the
+    # token embedded; pre-create the log file with restrictive permissions
+    # so that banner is never world/group readable, even briefly.
+    touch /var/log/jupyterlab.log
+    chmod 600 /var/log/jupyterlab.log
     nohup "${VENV_PYTHON}" -m jupyter lab \
         --ip=0.0.0.0 --port=8888 --no-browser --allow-root \
         --ServerApp.token="${RUNPOD_JUPYTER_TOKEN:-}" \
         --notebook-dir="${PROJECT_DIR}" \
         > /var/log/jupyterlab.log 2>&1 &
-    log "JupyterLab logs: /var/log/jupyterlab.log"
+    log "JupyterLab logs: /var/log/jupyterlab.log (permissions restricted to root)"
 fi
 
 log "Startup complete. Container will keep running."

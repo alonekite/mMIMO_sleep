@@ -18,10 +18,10 @@ two recurring failures documented in `../handoff20260817.md` and
 | Aspect | Decision |
 |---|---|
 | Base image | `nvidia/cuda:12.6.3-base-ubuntu22.04` (fixed tag) |
-| Why compatible with cu126 wheels | It's an Ubuntu 22.04 image tagged for CUDA 12.6; the actual CUDA *runtime* libraries used by `torch==2.13.0+cu126` come from the `nvidia-*-cu12` pip wheels bundled with PyTorch itself (in `site-packages/nvidia/*`), not from the base image. Only the GPU driver (`libcuda.so`) is provided by the RunPod host via the NVIDIA Container Toolkit at container start. The base image tag just needs to be a CUDA-toolkit-compatible Ubuntu 22.04 image; it does not need to contain a full CUDA toolkit install. |
+| Why compatible with cu126 wheels | It's an Ubuntu 22.04 image tagged for CUDA 12.6. The `-base` variant does ship real CUDA 12.6 runtime packaging (the CUDA base package, NVIDIA Container Toolkit hook metadata, and core shared libraries such as `libcudart`) — it is not only metadata/env vars — but it excludes the full development toolkit (`nvcc`, headers) and, necessarily, the GPU driver itself, which can never be baked into any container image and is always injected by the RunPod host via the NVIDIA Container Toolkit at container start. The bulk of the CUDA *runtime* libraries actually used by `torch==2.13.0+cu126` (cuBLAS, cuDNN, NCCL, ...) come from the `nvidia-*-cu12` pip wheels bundled with PyTorch itself (in `site-packages/nvidia/*`), independent of the base image. Host driver compatibility with CUDA 12.6 remains essential regardless. |
 | Python 3.11 | Installed from the **deadsnakes PPA** as the unversioned `python3.11` / `python3.11-venv` packages (major.minor pin only — see "Python 3.11 pinning" below for why an exact patch pin was deliberately dropped). |
 | Where the venv lives | `/opt/venv`, **inside the image**, not under `/workspace`. This is the core fix for failure (1): the interpreter is now part of the immutable, versioned image and can never again dangle after a pod migration. |
-| What goes in the image | OS packages, Python 3.11, `/opt/venv` with all pinned dependencies (PyTorch cu126, Sionna RT, Mitsuba, Dr.Jit, NumPy, Matplotlib, Jupyter/ipykernel, pytest, ruff), the Jupyter kernelspec, `docker/smoke_test.py`, `docker/runpod-start.sh`. |
+| What goes in the image | OS packages (including `llvm`, needed for Dr.Jit/Mitsuba's LLVM JIT backend), Python 3.11, `/opt/venv` with all pinned dependencies (`pip`/`setuptools`/`wheel` bootstrap, PyTorch cu126, Sionna RT, Mitsuba, Dr.Jit, NumPy, Matplotlib, Jupyter/ipykernel, pytest, ruff), the Jupyter kernelspec, `docker/smoke_test.py`, `docker/verify_environment.py`, `docker/runpod-start.sh`. |
 | What stays on `/workspace` (network volume) | The project source (`src/`, `tests/`, `notebook/`, `pyproject.toml`, handoff docs, `.git`). The image never bakes in project code; `runpod-start.sh` runs `pip install -e /workspace/mMIMO_sleep --no-deps` on every start so code changes on the volume take effect immediately without a rebuild. |
 | Avoiding the old `.venv` symlink problem | `Dockerfile.runpod` and `runpod-start.sh` never reference `/workspace/mMIMO_sleep/.venv` at all. The old `.venv` directory is left untouched on the volume (for manual/local-debug use only) but is not part of the new workflow. The Jupyter kernelspec and `PATH` always point at `/opt/venv/bin/python`. |
 
@@ -69,8 +69,12 @@ Two layers of defense (see `Dockerfile.runpod` comments for details):
    command run during the build (or manually inside a running container)
    will error out instead of silently resolving a different build.
 3. At container start, the project is installed with
-   `pip install -e /workspace/mMIMO_sleep --no-deps`, which never
-   re-resolves `torch>=2.2,<3` from `pyproject.toml` at all.
+   `pip install -e /workspace/mMIMO_sleep --no-deps --no-build-isolation`,
+   which never re-resolves `torch>=2.2,<3` from `pyproject.toml` at all, and
+   never needs to download build-time tooling either: `setuptools` and
+   `wheel` (the tools `pyproject.toml`'s `[build-system]` and an editable
+   install need) are already pinned and installed in `/opt/venv` at image
+   build time (see `Dockerfile.runpod`'s venv bootstrap step).
 
 ### CUDA Error 804 diagnosis logic
 
@@ -129,7 +133,8 @@ this function detects and, only when confirmed, corrects.
 | `../.dockerignore` | Keeps `.git`, `.venv`, notebooks, docs, and secrets out of the build context/image. |
 | `constraints.txt` | Pins `torch==2.13.0+cu126` for the whole build (via `PIP_CONSTRAINT`). |
 | `requirements-runpod.txt` | Pinned versions for Sionna RT, Mitsuba, Dr.Jit, NumPy, Matplotlib, Jupyter/ipykernel, pytest, ruff. |
-| `smoke_test.py` | Unified verification script (see Section 4 below). |
+| `smoke_test.py` | Unified verification script (see Section 4 below); also run as a `RUN` layer inside `Dockerfile.runpod` itself in `--mode cpu`. |
+| `verify_environment.py` | Build-time-only dependency assertions run as a `RUN` layer right after `requirements-runpod.txt` is installed: `pip check`, a `pip freeze` snapshot written to `/opt/build/pip-freeze.txt`, exact `torch.__version__`/`torch.version.cuda` checks, and a guard against any resolved CUDA 13 NVIDIA package (name ending `-cu13`). |
 | `runpod-start.sh` | Idempotent container entrypoint (`CMD` in `Dockerfile.runpod`). |
 | `README.md` | This file. |
 
@@ -164,14 +169,23 @@ Notes:
   directories, so none of those are sent to the Docker daemon or baked into
   layers. All files actually referenced by `COPY` in `Dockerfile.runpod`
   (`docker/constraints.txt`, `docker/requirements-runpod.txt`,
-  `docker/smoke_test.py`, `docker/runpod-start.sh`) have plain `.txt`/`.py`/
-  `.sh` extensions and are not matched by any `.dockerignore` pattern —
-  verified by inspection (see Section 8 static checks below).
+  `docker/smoke_test.py`, `docker/verify_environment.py`,
+  `docker/runpod-start.sh`) have plain `.txt`/`.py`/`.sh` extensions and are
+  not matched by any `.dockerignore` pattern — verified by inspection (see
+  Section 8 static checks below).
 - This build downloads PyTorch (~3-4 GB with CUDA libs) and the Sionna
   RT/Mitsuba/Dr.Jit wheels; expect the first build to take a while and use
   several GB of disk space for layer cache. Building `linux/amd64` on an
   `arm64` Mac uses QEMU emulation and will be noticeably slower than a
   native x86_64 build.
+- **The build itself now fails fast on regressions**: after installing
+  `requirements-runpod.txt`, a `RUN` layer executes
+  `docker/verify_environment.py` (`pip check`, `pip freeze` snapshot, exact
+  torch/CUDA version assertions, CUDA-13-package guard); after the Jupyter
+  kernelspec and `smoke_test.py` are copied in, a further `RUN` layer
+  executes `smoke_test.py --mode cpu`. Either failing stops `docker build`
+  before an image is produced — no separate post-build smoke-test step is
+  needed.
 - **This environment could not run `docker build` directly** (no Docker
   daemon available in this session) — the files above were written and
   reviewed but the actual build was not executed. Please run the build
@@ -200,12 +214,14 @@ docker run --rm mmimo-sleep-runpod:v1 \
   /opt/venv/bin/python /opt/smoke_test.py --mode cpu
 ```
 
-Note: `import mMIMO_sleep` will only succeed if `/workspace/mMIMO_sleep` is
-mounted and editable-installed (see Section 3 of `runpod-start.sh`, or run
-the `pip install -e ... --no-deps` command manually first). Without the
-volume mounted, expect that one check to `[FAIL]` — this is expected on a
-plain build-verification machine with no project volume attached, and does
-not indicate an image problem by itself.
+Note: the `import mMIMO_sleep` check reports a `[PASS]` with a "skipped"
+message (not a `[FAIL]`) when `/workspace/mMIMO_sleep` is not mounted —
+expected both at `docker build` time (this is exactly the `RUN
+/opt/venv/bin/python /opt/smoke_test.py --mode cpu` layer in
+`Dockerfile.runpod`) and on any other build-verification machine with no
+project volume attached. Once the volume is mounted and
+`pip install -e ... --no-deps --no-build-isolation` has run (see Section 3
+of `runpod-start.sh`), this check reports a real import instead.
 
 ### GPU acceptance mode — final RunPod validation
 
@@ -362,26 +378,30 @@ unchanged image.
 
 1. Checks out the repo.
 2. Verifies `Dockerfile.runpod`, `.dockerignore`, `docker/runpod-start.sh`,
-   `docker/smoke_test.py`, `docker/requirements-runpod.txt`,
-   `docker/constraints.txt` all exist.
+   `docker/smoke_test.py`, `docker/verify_environment.py`,
+   `docker/requirements-runpod.txt`, `docker/constraints.txt` all exist.
 3. Validates `image_tag`: rejects empty, `latest`, and anything that isn't a
    legal Docker tag.
 4. Prints `df -h` and `docker version` for diagnostics (no secrets).
 5. Logs in to Docker Hub (`docker/login-action@v4`, credentials from
    `vars.DOCKERHUB_USERNAME` / `secrets.DOCKERHUB_TOKEN`, never printed).
 6. Sets up Buildx (`docker/setup-buildx-action@v4`).
-7. Builds `Dockerfile.runpod` for `linux/amd64` with
-   `docker/build-push-action@v7`, `load: true` (into the runner's local
-   Docker daemon), `push: false`, using the GitHub Actions cache
-   (`cache-from: type=gha`, `cache-to: type=gha,mode=max`).
-8. Runs the **CPU/import smoke test only**:
-   `docker run --rm --entrypoint /opt/venv/bin/python <image> /opt/smoke_test.py --mode cpu`
-   — this step must succeed or the job stops here and nothing is pushed.
-9. Pushes the image to Docker Hub (`docker push`).
-10. Verifies the pushed manifest reports `linux/amd64`
-    (`docker buildx imagetools inspect`).
-11. Writes the final image name and digest to the GitHub Actions Job
-    Summary.
+7. Builds **and pushes** `Dockerfile.runpod` for `linux/amd64` in a single
+   `docker/build-push-action@v7` step (`push: true`, no `load: true`),
+   using the GitHub Actions cache (`cache-from: type=gha`,
+   `cache-to: type=gha,mode=max`). The CPU/import smoke test
+   (`smoke_test.py --mode cpu`) and the dependency assertions
+   (`verify_environment.py`) both run as `RUN` layers **inside**
+   `Dockerfile.runpod` (see Sections 4 and 2 above) — if either fails,
+   `buildx` fails before producing a final image, so `push: true` never
+   gets a chance to push a broken image. This also avoids `load: true`
+   pulling the multi-GB image into the runner's local Docker store just to
+   re-run a check that already ran during the build.
+8. Verifies the pushed manifest reports `linux/amd64`
+   (`docker buildx imagetools inspect`).
+9. Writes the final image name and digest (captured directly from the
+   `build-push-action` step's `digest` output) to the GitHub Actions Job
+   Summary.
 
 ### Important: GitHub Actions can only run the CPU smoke test
 

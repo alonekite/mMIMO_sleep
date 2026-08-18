@@ -104,15 +104,19 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   without it. This also benefits real RunPod pods with non-CUDA-capable
 #   or misconfigured GPUs, since the LLVM backend is the CPU fallback there
 #   too.
-# - binutils: provides `readelf`, used ONLY by the failure-only Dr.Jit
-#   dynamic-linking diagnostic below (docker/drjit_diagnose.py) to inspect
-#   RPATH/RUNPATH/NEEDED entries when an import fails. `ldd` itself already
-#   ships in the base image via libc-bin. Diagnostic-only; not otherwise
-#   required at runtime.
+# - libatomic1: required by the Dr.Jit binary extension (`_drjit_ext*.so`).
+#   Confirmed root cause of a real build failure (see docker/README.md
+#   "Dr.Jit / libatomic1" section): Dr.Jit's own error message
+#   ("Could not import the Dr.Jit binary extension... incompatible with
+#   the current interpreter") falsely suggested a Python 3.11.14 vs.
+#   3.11.15 ABI mismatch, but `exception.__cause__` was actually
+#   `ImportError: libatomic.so.1: cannot open shared object file`, and
+#   `ldd` on the extension module confirmed `libatomic.so.1 => not found`.
+#   Ubuntu 22.04 does not install `libatomic1` by default in this base
+#   image.
 # - locales: avoids perl/locale warnings from apt post-install hooks
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        binutils \
         ca-certificates \
         curl \
         git \
@@ -126,6 +130,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         python3.11 \
         python3.11-venv \
+        libatomic1 \
         libgl1 \
         libglib2.0-0 \
         libgomp1 \
@@ -133,6 +138,25 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /opt/build \
     && python3.11 --version | tee /opt/build/python-version.txt
+
+# ---------------------------------------------------------------------------
+# Build-time assertion: confirm libatomic.so.1 is actually registered with
+# the dynamic linker after installing libatomic1 above (not just that the
+# package's files exist on disk). Fails the build immediately if not,
+# rather than deferring the failure to the much harder-to-diagnose Dr.Jit
+# ImportError this was added to fix (see docker/README.md).
+# ---------------------------------------------------------------------------
+RUN set -eu; \
+    found="$(ldconfig -p | grep -F 'libatomic.so.1' || true)"; \
+    if [ -z "${found}" ]; then \
+        echo "ERROR: libatomic.so.1 not registered with ldconfig after installing libatomic1." >&2; \
+        echo "ldconfig -p | grep -i atomic:" >&2; \
+        ldconfig -p | grep -i atomic >&2 || true; \
+        exit 1; \
+    fi; \
+    echo "Found libatomic.so.1:"; \
+    echo "${found}"; \
+    echo "${found}" | tee /opt/build/libatomic-check.txt
 
 # ---------------------------------------------------------------------------
 # Build-time diagnostic: confirm a usable LLVM shared library is actually
@@ -239,21 +263,6 @@ RUN ${VENV_PATH}/bin/python -m ipykernel install \
 COPY docker/smoke_test.py /opt/smoke_test.py
 COPY docker/runpod-start.sh /opt/runpod-start.sh
 RUN chmod +x /opt/runpod-start.sh
-
-# ---------------------------------------------------------------------------
-# Failure-only Dr.Jit/Mitsuba dynamic-linking diagnostic. Runs immediately
-# BEFORE the CPU smoke test below. On success (both imports work) it only
-# prints two "[INFO] import ...: OK" lines and exits 0 — no extra noise on
-# a healthy build. On failure, it dumps python identity, `pip show`, every
-# .so under the drjit package dir, `ldd`/`readelf -d` on the extension
-# module(s), the real location of libdrjit-extra.so / libdrjit-core.so, and
-# the relevant `ldconfig -p` entries, THEN re-raises so this step (and the
-# build) fails here — one step earlier than smoke_test.py would otherwise
-# fail on the same import, with full diagnostics already in the log. See
-# docker/drjit_diagnose.py.
-# ---------------------------------------------------------------------------
-COPY docker/drjit_diagnose.py /opt/drjit_diagnose.py
-RUN ${VENV_PATH}/bin/python /opt/drjit_diagnose.py
 
 # ---------------------------------------------------------------------------
 # Build-time CPU/import smoke test. Runs on every build (including

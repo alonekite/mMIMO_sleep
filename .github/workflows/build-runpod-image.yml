@@ -33,7 +33,6 @@ jobs:
             docker/runpod-start.sh \
             docker/smoke_test.py \
             docker/verify_environment.py \
-            docker/drjit_diagnose.py \
             docker/requirements-runpod.txt \
             docker/constraints.txt
           do

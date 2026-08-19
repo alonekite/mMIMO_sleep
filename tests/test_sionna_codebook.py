@@ -20,7 +20,14 @@ from mMIMO_sleep.simulation.sionna_array import (
     weights_to_sionna_precoding,
 )
 
-_HAS_SIONNA = importlib.util.find_spec("sionna.rt") is not None
+def _has_sionna_rt() -> bool:
+    try:
+        return importlib.util.find_spec("sionna.rt") is not None
+    except Exception:  # parent package absent or malformed
+        return False
+
+
+_HAS_SIONNA = _has_sionna_rt()
 
 pytestmark = pytest.mark.skipif(not _HAS_SIONNA, reason="Sionna RT not installed")
 

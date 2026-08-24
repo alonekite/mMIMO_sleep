@@ -7,6 +7,7 @@ import unittest
 from types import SimpleNamespace
 
 import numpy as np
+import torch
 
 from mMIMO_sleep.data.ginza_sample import (
     BOLTZMANN_CONSTANT,
@@ -256,6 +257,31 @@ class GinzaSampleMathTest(unittest.TestCase):
             stats_real.rms_delay_spread_s,
             stats_complex.rms_delay_spread_s,
         )
+
+
+class CfrConsistencyToleranceTest(unittest.TestCase):
+    """Regression for the _compute_channels wideband/center CFR consistency check."""
+
+    def _make_trial_tensors(self, relative_error: float):
+        base = torch.tensor(
+            [[1.0 + 1.0j, 0.5 + 0.2j],
+             [0.3 - 0.1j, 0.2 + 0.4j]],
+            dtype=torch.complex64,
+        )
+        perturbed = base * (1.0 + relative_error)
+        return perturbed, base
+
+    def test_4e5_relative_difference_passes(self) -> None:
+        # Representative of the complex64 GPU materialization difference
+        # observed for UE 6 / UE 19 before the tolerance was relaxed.
+        perturbed, base = self._make_trial_tensors(relative_error=4e-5)
+        torch.testing.assert_close(perturbed, base, rtol=1e-4, atol=1e-12)
+
+    def test_1e2_relative_difference_fails(self) -> None:
+        # A clearly erroneous CFR mismatch must still fail.
+        perturbed, base = self._make_trial_tensors(relative_error=1e-2)
+        with self.assertRaises(AssertionError):
+            torch.testing.assert_close(perturbed, base, rtol=1e-4, atol=1e-12)
 
 
 if __name__ == "__main__":

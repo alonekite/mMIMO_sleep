@@ -58,10 +58,19 @@ def array_config_to_planar_array(
     ``weights_to_sionna_precoding``.
 
     ``polarization="VH"`` creates two linear patterns: pattern 0 = V,
-    pattern 1 = H.  Sionna RT stores the precoding vector in pattern-major
-    order, which again matches the project polarization-major ordering.
+    pattern 1 = H.  ``polarization="cross"`` creates two linear patterns with
+    slant angles -45° (pattern 0) and +45° (pattern 1).  In both cases,
+    Sionna RT stores the precoding vector in pattern-major order, which matches
+    the project polarization-major ordering.
+
+    Raises:
+        ValueError: If ``polarization`` is not ``"VH"`` or ``"cross"``.
     """
     rt = _require_sionna_rt()
+    if polarization not in ("VH", "cross"):
+        raise ValueError(
+            f"polarization must be 'VH' or 'cross', got {polarization!r}."
+        )
     # Sionna RT PlanarArray models physical elements and uses column-first
     # (vertical/row varies fastest) element ordering.  Project codebook weights
     # use row-major (horizontal/col varies fastest).  The conversion is applied

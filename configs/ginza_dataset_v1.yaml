@@ -1,0 +1,79 @@
+{
+  "scene": {
+    "scene_xml_path": "/workspace/Study_Sionna/Projects/TAP_TCB_Resource/Ginza_012/ginza_1/ginza_1.xml",
+    "ue_positions_path": "/workspace/Study_Sionna/Projects/TAP_TCB_Resource/Ginza_012/Results/rx_1000.pkl",
+    "ue_positions_key": "all_rx_positions",
+    "scene_id": "ginza_1",
+    "carrier_frequency_hz": 3500000000.0,
+    "bandwidth_hz": 100000000.0,
+    "temperature_k": 290.0,
+    "tx_position_m": [-122.0, -108.5, 41.0],
+    "tx_orientation_rad": [0.0, 0.1308996938995747, 0.0],
+    "material_name": "my_concrete",
+    "material_itu_type": "concrete",
+    "material_thickness_m": 0.5,
+    "material_scattering_coefficient": 0.3,
+    "material_xpd_coefficient": 0.3,
+    "require_concrete_override": true,
+    "los_delay_tolerance_s": 0.000000005
+  },
+  "antenna": {
+    "num_subarray_rows": 4,
+    "num_horizontal": 8,
+    "elements_per_subarray": 2,
+    "num_polarizations": 2,
+    "tx_pattern": "tr38901",
+    "tx_polarization": "cross",
+    "rx_pattern": "iso",
+    "rx_polarization": "VH",
+    "vertical_spacing_wavelengths": 0.5,
+    "horizontal_spacing_wavelengths": 0.5
+  },
+  "codebook": {
+    "num_vertical_beams": 8,
+    "num_horizontal_beams": 32,
+    "num_i2": 4,
+    "validity_target_loss_db": 6.020599913279624,
+    "validity_tolerance_db": 1.0,
+    "validity_grid_points": 121,
+    "beam_chunk_size": 128
+  },
+  "ofdm": {
+    "fft_size": 4096,
+    "cp_length_samples": 288,
+    "subcarrier_spacing_hz": 30000.0,
+    "num_resource_blocks": 273,
+    "subcarriers_per_resource_block": 12,
+    "left_guard_subcarriers": 410,
+    "right_guard_subcarriers": 410,
+    "max_cfr_chunk_subcarriers": 512,
+    "max_cfr_chunk_entries": 1073741824,
+    "tx_power_dbm": 51.13,
+    "noise_figure_db": 5.0
+  },
+  "solver": {
+    "max_depth": 15,
+    "samples_per_src": 1000000,
+    "max_num_paths_per_src": 1000000,
+    "synthetic_array": true,
+    "los": true,
+    "specular_reflection": true,
+    "diffuse_reflection": true,
+    "refraction": false,
+    "diffraction": false,
+    "edge_diffraction": false,
+    "diffraction_lit_region": false,
+    "seed": 36
+  },
+  "output": {
+    "directory": "outputs/ginza_dataset_v1",
+    "table_format": "auto",
+    "start_index": 0,
+    "stop_index": null,
+    "resume": false,
+    "retry_failed": false,
+    "fail_fast": false
+  },
+  "mitsuba_variant": "cuda_ad_mono_polarized",
+  "torch_device": "cpu"
+}
